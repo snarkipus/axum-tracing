@@ -9,7 +9,7 @@ use color_eyre::eyre::eyre;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::error::{ApiError, BottomError, MiddleError, TopError};
+use crate::error::{ApiError, BadError, BottomError, MiddleError, TopError};
 
 #[debug_handler]
 pub async fn handler() -> Html<&'static str> {
@@ -40,29 +40,25 @@ pub async fn fallback(uri: Uri) -> (StatusCode, String) {
 }
 
 #[debug_handler]
-#[tracing::instrument(skip(_server_id))]
-pub async fn handler_error(State(_server_id): State<Uuid>) -> Result<(), ApiError> {
-    match top_error() {
-        Ok(_) => Ok(()),
-        Err(err) => Err(ApiError::UnexpectedError(eyre!(err))),
-    }
-}
-
-fn bottom_error() -> Result<(), BottomError> {
-    let error = std::io::Error::new(std::io::ErrorKind::Other, "Terrible IO Error");
-    Err(BottomError::UnexpectedError(error))
-}
-
-fn middle_error() -> Result<(), MiddleError> {
-    match bottom_error() {
-        Ok(_) => Ok(()),
-        Err(err) => Err(MiddleError::UnexpectedError(eyre!(err))),
-    }
+#[tracing::instrument(skip(server_id))]
+pub async fn handler_error(State(server_id): State<Uuid>) -> Result<(), ApiError> {
+    tracing::info!("Server ID: {}", server_id);
+    top_error().map_err(|err| ApiError::UnexpectedError(eyre!(err)))
 }
 
 fn top_error() -> Result<(), TopError> {
-    match middle_error() {
-        Ok(_) => Ok(()),
-        Err(err) => Err(TopError::UnexpectedError(eyre!(err))),
-    }
+    middle_error().map_err(|err| TopError::UnexpectedError(eyre!(err)))
+}
+
+fn middle_error() -> Result<(), MiddleError> {
+    bottom_error().map_err(|err| MiddleError::UnexpectedError(eyre!(err)))
+}
+
+fn bottom_error() -> Result<(), BottomError> {
+    bare_metal().map_err(|err| BottomError::UnexpectedError(eyre!(err)))
+}
+
+fn bare_metal() -> Result<(), BadError> {
+    let error = std::io::Error::new(std::io::ErrorKind::Other, "Dinosaurs Mating");
+    Err(BadError(error))
 }

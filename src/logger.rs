@@ -5,7 +5,7 @@ use axum::{
     response::Response,
     Router,
 };
-use hyper::{http::HeaderName, Version};
+use hyper::{http::HeaderName, Version, body::Bytes, HeaderMap};
 use std::{borrow::Cow, net::SocketAddr, time::Duration};
 use tower::ServiceBuilder;
 use tracing::subscriber::set_global_default;
@@ -15,7 +15,7 @@ use tracing_subscriber::{fmt::MakeWriter, layer::SubscriberExt, EnvFilter, Regis
 
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    trace::TraceLayer,
+    trace::TraceLayer, classify::ServerErrorsFailureClass,
 };
 use tracing::{Span, Subscriber};
 
@@ -151,16 +151,16 @@ pub async fn add_telemetry(route: Router) -> Router {
                                 }
                             }                           
                     }) 
-                    // .on_body_chunk(|_chunk: &Bytes, _latency: Duration, _span: &Span| {
-                    //     // ...
-                    // })
-                    // .on_eos(
-                    //     |_trailers: Option<&HeaderMap>, _stream_duration: Duration, _span: &Span| {
-                    //         // ...
-                    //     },
-                    // .on_failure(|_error: ServerErrorsFailureClass, _latency: Duration, _span: &Span| {
-                    //     // ...
-                    // })
+                    .on_body_chunk(|_chunk: &Bytes, _latency: Duration, _span: &Span| {
+                        // ...
+                    })
+                    .on_eos(
+                        |_trailers: Option<&HeaderMap>, _stream_duration: Duration, _span: &Span| {
+                            // ...
+                    })
+                    .on_failure(|_error: ServerErrorsFailureClass, _latency: Duration, _span: &Span| {
+                        // ...
+                    })
             )
             .layer(PropagateRequestIdLayer::new(
                 HeaderName::from_static("x-request-id"),
