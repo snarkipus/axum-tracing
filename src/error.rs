@@ -7,6 +7,33 @@ use std::fmt::Debug;
 use thiserror::Error;
 
 #[derive(Error)]
+pub enum OpaqueApiError {
+    #[error("Route Level Opaque Error")]
+    UnexpectedError(#[from] color_eyre::Report),
+}
+
+impl Debug for OpaqueApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpaqueApiError::UnexpectedError(err) => {
+                // tracing::error!("Unexpected: {}", err);
+                error_chain_fmt(err, f)
+            }
+        }
+    }
+}
+
+impl IntoResponse for OpaqueApiError {
+    fn into_response(self) -> Response<BoxBody> {
+        let status = StatusCode::INTERNAL_SERVER_ERROR;
+        let mut response = status.into_response();
+
+        response.extensions_mut().insert(self);
+        response
+    }
+}
+
+#[derive(Error)]
 pub enum ApiError {
     #[error("Route Level Error")]
     UnexpectedError(#[from] color_eyre::Report),
@@ -94,7 +121,7 @@ impl std::fmt::Debug for BadError {
 
 impl std::fmt::Display for BadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        tracing::error!("BadError: {:#?}", self.0);
+        tracing::error!("BadError: {}", self.0);
         write!(f, "Terrible IO Error - Server is legit on fire")
     }
 }

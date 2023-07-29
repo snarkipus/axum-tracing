@@ -19,7 +19,7 @@ use tower_http::{
 };
 use tracing::{Span, Subscriber};
 
-use crate::error::ApiError;
+use crate::error::{ApiError, OpaqueApiError};
 
 // region: init telemetry
 pub fn get_subscriber<Sink>(
@@ -114,7 +114,14 @@ pub async fn add_telemetry(route: Router) -> Router {
                         |response: &Response, _latency: Duration, span: &Span| {
                             let mut display = String::new();
                             let mut debug = String::new();
+                            
                             if let Some(response_error) = response.extensions().get::<ApiError>() {
+                                // pre-formatting errors is a workaround for https://github.com/tokio-rs/tracing/issues/1565
+                                display = format!("{response_error}");
+                                debug = format!("{response_error:?}");
+                            }
+
+                            if let Some(response_error) = response.extensions().get::<OpaqueApiError>() {
                                 // pre-formatting errors is a workaround for https://github.com/tokio-rs/tracing/issues/1565
                                 display = format!("{response_error}");
                                 debug = format!("{response_error:?}");
@@ -156,7 +163,7 @@ pub async fn add_telemetry(route: Router) -> Router {
                     })
                     .on_eos(
                         |_trailers: Option<&HeaderMap>, _stream_duration: Duration, _span: &Span| {
-                            // ...
+                        // ...
                     })
                     .on_failure(|_error: ServerErrorsFailureClass, _latency: Duration, _span: &Span| {
                         // ...

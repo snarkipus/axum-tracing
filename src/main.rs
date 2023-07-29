@@ -26,6 +26,7 @@ async fn main() {
         .route("/test", get(routes::handler_test))
         .route("/query", get(routes::handler_query))
         .route("/error", get(routes::handler_error))
+        .route("/error/opaque", get(routes::handler_error_opaque))
         .with_state(state)
         .fallback(routes::fallback);
 

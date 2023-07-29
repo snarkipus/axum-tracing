@@ -9,7 +9,7 @@ use color_eyre::eyre::eyre;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::error::{ApiError, BadError, BottomError, MiddleError, TopError};
+use crate::error::{ApiError, BadError, BottomError, MiddleError, TopError, OpaqueApiError};
 
 #[debug_handler]
 pub async fn handler() -> Html<&'static str> {
@@ -61,4 +61,11 @@ fn bottom_error() -> Result<(), BottomError> {
 fn bare_metal() -> Result<(), BadError> {
     let error = std::io::Error::new(std::io::ErrorKind::Other, "Dinosaurs Mating");
     Err(BadError(error))
+}
+
+#[debug_handler]
+#[tracing::instrument(skip(server_id))]
+pub async fn handler_error_opaque(State(server_id): State<Uuid>) -> Result<(), OpaqueApiError> {
+    tracing::info!("Server ID: {}", server_id);
+    top_error().map_err(|err| OpaqueApiError::UnexpectedError(eyre!(err)))
 }
