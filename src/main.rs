@@ -1,42 +1,40 @@
-use axum::{extract::FromRef, routing::get, Router};
-use std::net::{SocketAddr, TcpListener};
-use uuid::Uuid;
-
-mod error;
-mod logger;
-mod routes;
-
-#[derive(Clone, Debug, FromRef)]
-struct AppState {
-    server_id: Uuid,
-}
+use axum::{response::Html, routing::get, Router};
+use axum_tracing::{init_tracing, HttpTelemetryConfig, TelemetryLayerBuilder, TracingConfig};
 
 #[tokio::main]
 async fn main() {
-    let subscriber = logger::get_subscriber("zero2axum".into(), "info".into(), std::io::stdout);
-    logger::init_subscriber(subscriber);
-    color_eyre::install().unwrap();
+    let _guard = init_tracing(TracingConfig::from_env()).expect("failed to initialize tracing");
 
-    let state = AppState {
-        server_id: Uuid::new_v4(),
-    };
+    let app = Router::new()
+        .route("/", get(handler))
+        .route("/health", get(health))
+        .layer(
+            TelemetryLayerBuilder::new(HttpTelemetryConfig::default())
+                .with_span_enricher(|context, span| {
+                    span.record(
+                        "app.context",
+                        format!("{} {}", context.method, context.target),
+                    );
+                })
+                .build(),
+        );
 
-    let mut app = Router::new()
-        .route("/", get(routes::handler))
-        .route("/test", get(routes::handler_test))
-        .route("/query", get(routes::handler_query))
-        .route("/error", get(routes::handler_error))
-        .route("/error/opaque", get(routes::handler_error_opaque))
-        .with_state(state)
-        .fallback(routes::fallback);
-
-    app = logger::add_telemetry(app).await;
-
-    let listener = TcpListener::bind("127.0.0.1:3000").unwrap();
-    tracing::info!("listening on {}", listener.local_addr().unwrap());
-    axum::Server::from_tcp(listener)
-        .unwrap()
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
-        .unwrap();
+        .expect("failed to bind TCP listener");
+    tracing::info!(
+        "listening on {}",
+        listener.local_addr().expect("local addr")
+    );
+    axum::serve(listener, app)
+        .await
+        .expect("server exited with error");
+}
+
+async fn handler() -> Html<&'static str> {
+    Html("<h1>Telemetry layer demo</h1>")
+}
+
+async fn health() -> &'static str {
+    "ok"
 }
