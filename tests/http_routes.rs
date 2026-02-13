@@ -4,17 +4,19 @@ use axum::body::Body;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+fn request(path: &str) -> axum::http::Request<Body> {
+    axum::http::Request::builder()
+        .uri(path)
+        .body(Body::empty())
+        .expect("request must be valid")
+}
+
 #[tokio::test]
 async fn root_route_works() {
     let app = fixtures::app::app();
 
     let response = app
-        .oneshot(
-            axum::http::Request::builder()
-                .uri("/")
-                .body(Body::empty())
-                .expect("request must be valid"),
-        )
+        .oneshot(request("/"))
         .await
         .expect("request should succeed");
 
@@ -26,12 +28,7 @@ async fn query_route_uses_extractor() {
     let app = fixtures::app::app();
 
     let response = app
-        .oneshot(
-            axum::http::Request::builder()
-                .uri("/query?name=Jane")
-                .body(Body::empty())
-                .expect("request must be valid"),
-        )
+        .oneshot(request("/query?name=Jane"))
         .await
         .expect("request should succeed");
 
@@ -50,12 +47,7 @@ async fn fallback_returns_not_found() {
     let app = fixtures::app::app();
 
     let response = app
-        .oneshot(
-            axum::http::Request::builder()
-                .uri("/missing")
-                .body(Body::empty())
-                .expect("request must be valid"),
-        )
+        .oneshot(request("/missing"))
         .await
         .expect("request should succeed");
 

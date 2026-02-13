@@ -14,9 +14,7 @@ It provides:
 
 ```rust
 use axum::{Router, routing::get};
-use axum_tracing::{
-    HttpTelemetryConfig, TelemetryLayerBuilder, TracingConfig, init_tracing,
-};
+use axum_tracing::{init_tracing, RouterTelemetryExt, TracingConfig};
 
 #[tokio::main]
 async fn main() {
@@ -24,17 +22,28 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(|| async { "ok" }))
-        .layer(
-            TelemetryLayerBuilder::new(HttpTelemetryConfig::default())
-                .with_span_enricher(|ctx, span| {
-                    span.record("app.context", format!("{} {}", ctx.method, ctx.target));
-                })
-                .build(),
-        );
+        .with_telemetry();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
+```
+
+Advanced customization (snippet):
+
+```rust
+use axum::{Router, routing::get};
+use axum_tracing::{RouterTelemetryExt, TelemetryLayer};
+
+let app = Router::new()
+    .route("/", get(|| async { "ok" }))
+    .with_telemetry_layer(
+        TelemetryLayer::builder()
+            .include_trace_response_header(true)
+            .with_span_enricher(|ctx, span| {
+                span.record("app.context", format!("{} {}", ctx.method, ctx.target));
+            }),
+    );
 ```
 
 ## Environment Variables

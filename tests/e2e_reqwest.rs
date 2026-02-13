@@ -6,6 +6,8 @@ use axum::Router;
 use axum_tracing::HttpTelemetryConfig;
 use reqwest::Client;
 
+const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
 #[tokio::test]
 async fn e2e_request_id_is_generated_and_propagated() {
     let server = TestServer::spawn(fixtures::app::app()).await;
@@ -27,10 +29,7 @@ async fn e2e_traceparent_header_is_present_when_enabled() {
 
     let response = client
         .get(server.url("/"))
-        .header(
-            "traceparent",
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        )
+        .header("traceparent", TRACEPARENT)
         .send()
         .await
         .expect("request should succeed");
@@ -49,10 +48,7 @@ async fn e2e_traceparent_header_is_absent_when_disabled() {
 
     let response = client
         .get(server.url("/"))
-        .header(
-            "traceparent",
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        )
+        .header("traceparent", TRACEPARENT)
         .send()
         .await
         .expect("request should succeed");

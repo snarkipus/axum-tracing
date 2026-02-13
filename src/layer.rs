@@ -12,6 +12,7 @@ use axum::{
     http::{HeaderName, Request, Response},
     response::IntoResponse,
     routing::Route,
+    Router,
 };
 use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
 use tower::{Service, ServiceBuilder};
@@ -22,6 +23,9 @@ use tower_http::{
 use tracing::Span;
 
 use crate::config::HttpTelemetryConfig;
+
+const FALLBACK_ROUTE: &str = "fallback";
+const TRACEPARENT_HEADER: &str = "traceparent";
 
 pub type SpanEnricher = Arc<dyn Fn(&RequestSpanContext, &Span) + Send + Sync + 'static>;
 
@@ -34,17 +38,32 @@ pub struct RequestSpanContext {
 }
 
 #[derive(Clone)]
-pub struct TelemetryLayerBuilder {
+pub struct TelemetryLayer {
     config: HttpTelemetryConfig,
     span_enricher: Option<SpanEnricher>,
 }
 
-impl TelemetryLayerBuilder {
+impl Default for TelemetryLayer {
+    fn default() -> Self {
+        Self::new(HttpTelemetryConfig::default())
+    }
+}
+
+impl TelemetryLayer {
+    pub fn builder() -> Self {
+        Self::default()
+    }
+
     pub fn new(config: HttpTelemetryConfig) -> Self {
         Self {
             config,
             span_enricher: None,
         }
+    }
+
+    pub fn include_trace_response_header(mut self, include: bool) -> Self {
+        self.config.include_trace_response_header = include;
+        self
     }
 
     pub fn with_span_enricher<F>(mut self, callback: F) -> Self
@@ -69,10 +88,13 @@ impl TelemetryLayerBuilder {
                       + Sync
                       + 'static,
     > + Clone {
-        let request_id_header = HeaderName::from_static(self.config.request_id_header);
-        let make_span = HttpSpanMaker {
-            span_enricher: self.span_enricher,
-        };
+        let Self {
+            config,
+            span_enricher,
+        } = self;
+
+        let request_id_header = HeaderName::from_static(config.request_id_header);
+        let make_span = HttpSpanMaker { span_enricher };
 
         ServiceBuilder::new()
             .layer(SetRequestIdLayer::new(
@@ -81,12 +103,32 @@ impl TelemetryLayerBuilder {
             ))
             .layer(PropagateRequestIdLayer::new(request_id_header))
             .option_layer(
-                self.config
+                config
                     .include_trace_response_header
                     .then_some(CopyTraceparentLayer),
             )
             .layer(OtelAxumLayer::default())
             .layer(TraceLayer::new_for_http().make_span_with(make_span))
+    }
+}
+
+pub type TelemetryLayerBuilder = TelemetryLayer;
+
+pub trait RouterTelemetryExt<S> {
+    fn with_telemetry(self) -> Router<S>;
+    fn with_telemetry_layer(self, layer: TelemetryLayer) -> Router<S>;
+}
+
+impl<S> RouterTelemetryExt<S> for Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    fn with_telemetry(self) -> Router<S> {
+        self.layer(TelemetryLayer::default().build())
+    }
+
+    fn with_telemetry_layer(self, layer: TelemetryLayer) -> Router<S> {
+        self.layer(layer.build())
     }
 }
 
@@ -104,7 +146,7 @@ pub fn telemetry_layer(
                   + Sync
                   + 'static,
 > + Clone {
-    TelemetryLayerBuilder::new(config).build()
+    TelemetryLayer::new(config).build()
 }
 
 #[derive(Clone)]
@@ -119,12 +161,12 @@ impl<B> MakeSpan<B> for HttpSpanMaker {
             .extensions()
             .get::<MatchedPath>()
             .map(|path| path.as_str().to_string())
-            .unwrap_or_else(|| "fallback".to_string());
-        let target = request
-            .uri()
+            .unwrap_or_else(|| FALLBACK_ROUTE.to_string());
+        let uri = request.uri();
+        let target = uri
             .path_and_query()
             .map(|path| path.as_str().to_string())
-            .unwrap_or_else(|| request.uri().path().to_string());
+            .unwrap_or_else(|| uri.path().to_string());
         let request_id = request
             .extensions()
             .get::<RequestId>()
@@ -193,13 +235,13 @@ where
     }
 
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
-        let traceparent = request.headers().get("traceparent").cloned();
+        let traceparent = request.headers().get(TRACEPARENT_HEADER).cloned();
         let future = self.inner.call(request);
 
         Box::pin(async move {
             let mut response = future.await?;
             if let Some(value) = traceparent {
-                response.headers_mut().insert("traceparent", value);
+                response.headers_mut().insert(TRACEPARENT_HEADER, value);
             }
             Ok(response)
         })

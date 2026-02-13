@@ -1,5 +1,5 @@
 use axum::{response::Html, routing::get, Router};
-use axum_tracing::{init_tracing, HttpTelemetryConfig, TelemetryLayerBuilder, TracingConfig};
+use axum_tracing::{init_tracing, RouterTelemetryExt, TracingConfig};
 
 #[tokio::main]
 async fn main() {
@@ -8,16 +8,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(handler))
         .route("/health", get(health))
-        .layer(
-            TelemetryLayerBuilder::new(HttpTelemetryConfig::default())
-                .with_span_enricher(|context, span| {
-                    span.record(
-                        "app.context",
-                        format!("{} {}", context.method, context.target),
-                    );
-                })
-                .build(),
-        );
+        .with_telemetry();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await

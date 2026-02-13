@@ -3,17 +3,19 @@ mod fixtures;
 use axum::body::Body;
 use tower::ServiceExt;
 
+fn request(path: &str) -> axum::http::Request<Body> {
+    axum::http::Request::builder()
+        .uri(path)
+        .body(Body::empty())
+        .expect("request must be valid")
+}
+
 #[tokio::test]
 async fn response_contains_request_id() {
     let app = fixtures::app::app();
 
     let response = app
-        .oneshot(
-            axum::http::Request::builder()
-                .uri("/")
-                .body(Body::empty())
-                .expect("request must be valid"),
-        )
+        .oneshot(request("/"))
         .await
         .expect("request should succeed");
 

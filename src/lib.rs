@@ -5,4 +5,4 @@ pub mod layer;
 
 pub use config::{HttpTelemetryConfig, OtlpProtocol, TracingConfig};
 pub use init::{init_tracing, TelemetryGuard};
-pub use layer::{telemetry_layer, TelemetryLayerBuilder};
+pub use layer::{telemetry_layer, RouterTelemetryExt, TelemetryLayer, TelemetryLayerBuilder};

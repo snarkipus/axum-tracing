@@ -5,7 +5,7 @@ use axum::{
     routing::get,
     Router,
 };
-use axum_tracing::{telemetry_layer, HttpTelemetryConfig};
+use axum_tracing::{HttpTelemetryConfig, RouterTelemetryExt, TelemetryLayer};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -20,7 +20,7 @@ pub fn app_with_config(config: HttpTelemetryConfig) -> Router {
         .route("/error", get(verbose_error))
         .route("/error/opaque", get(opaque_error))
         .fallback(fallback)
-        .layer(telemetry_layer(config))
+        .with_telemetry_layer(TelemetryLayer::new(config))
 }
 
 async fn index() -> Html<&'static str> {

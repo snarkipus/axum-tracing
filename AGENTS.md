@@ -89,6 +89,8 @@ These conventions are inferred from existing code and should be preserved.
 - Favor concrete return types when simple, and `impl Trait` only when it reduces type noise.
 - Use local config types (`TracingConfig`, `HttpTelemetryConfig`) as stable API boundaries.
 - Hide middleware type complexity behind `TelemetryLayerBuilder::build` and `telemetry_layer`.
+- Prefer `RouterTelemetryExt::with_telemetry()` for the default one-line mounting path.
+- Use `RouterTelemetryExt::with_telemetry_layer(...)` for advanced per-router customization.
 - Derive traits where helpful (`Debug`, `Deserialize`, `Error`, `Clone`, `PartialEq`, `Eq`).
 
 ### Naming conventions
@@ -99,6 +101,7 @@ These conventions are inferred from existing code and should be preserved.
   - structs/enums/traits: `UpperCamelCase`
   - constants/statics: `UPPER_SNAKE_CASE`
 - Name APIs by responsibility (`init_tracing`, `telemetry_layer`, `with_span_enricher`).
+- Keep extension-method names ergonomic and intent-based (`with_telemetry`, `with_telemetry_layer`).
 - Name error enums by boundary/layer (`TelemetryInitError`, fixture route error types).
 
 ### Error handling

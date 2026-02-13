@@ -4,17 +4,19 @@ use axum::body::Body;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+fn request(path: &str) -> axum::http::Request<Body> {
+    axum::http::Request::builder()
+        .uri(path)
+        .body(Body::empty())
+        .expect("request must be valid")
+}
+
 #[tokio::test]
 async fn verbose_error_route_includes_details() {
     let app = fixtures::app::app();
 
     let response = app
-        .oneshot(
-            axum::http::Request::builder()
-                .uri("/error")
-                .body(Body::empty())
-                .expect("request must be valid"),
-        )
+        .oneshot(request("/error"))
         .await
         .expect("request should succeed");
 
@@ -37,12 +39,7 @@ async fn opaque_error_route_hides_details() {
     let app = fixtures::app::app();
 
     let response = app
-        .oneshot(
-            axum::http::Request::builder()
-                .uri("/error/opaque")
-                .body(Body::empty())
-                .expect("request must be valid"),
-        )
+        .oneshot(request("/error/opaque"))
         .await
         .expect("request should succeed");
 
