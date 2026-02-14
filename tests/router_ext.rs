@@ -55,6 +55,27 @@ async fn with_telemetry_layer_respects_traceparent_setting() {
 }
 
 #[tokio::test]
+async fn with_telemetry_layer_copies_traceparent_when_enabled() {
+    let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let app = Router::new()
+        .route("/", get(|| async { "ok" }))
+        .with_telemetry_layer(TelemetryLayer::default().include_trace_response_header(true));
+
+    let response = app
+        .oneshot(request_with_traceparent("/"))
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(
+        response
+            .headers()
+            .get("traceparent")
+            .expect("traceparent header should be copied"),
+        traceparent
+    );
+}
+
+#[tokio::test]
 async fn with_telemetry_layer_uses_custom_request_id_header() {
     let app = Router::new()
         .route("/", get(|| async { "ok" }))

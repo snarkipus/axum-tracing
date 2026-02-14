@@ -1,9 +1,9 @@
 //! Axum HTTP telemetry layer and router extension APIs.
 
 use std::{
+    borrow::Cow,
     convert::Infallible,
     future::Future,
-    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -19,6 +19,7 @@ use axum::{
     Router,
 };
 use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
+use pin_project_lite::pin_project;
 use tower::{Service, ServiceBuilder};
 use tower_http::{
     request_id::{
@@ -107,7 +108,7 @@ impl RequestId {
 }
 
 impl IntoResponse for RootSpanRejection {
-    fn into_response(self) -> axum::response::Response {
+    fn into_response(self) -> axum::response::Response<Body> {
         let body = match self {
             Self::MissingRootSpan => {
                 "missing request telemetry span; ensure TelemetryLayer is mounted"
@@ -118,7 +119,7 @@ impl IntoResponse for RootSpanRejection {
 }
 
 impl IntoResponse for RequestIdRejection {
-    fn into_response(self) -> axum::response::Response {
+    fn into_response(self) -> axum::response::Response<Body> {
         let body = match self {
             Self::MissingRequestId => {
                 "missing request id; ensure TelemetryLayer request-id middleware is mounted"
@@ -371,22 +372,31 @@ struct HttpSpanMaker {
 
 impl<B> MakeSpan<B> for HttpSpanMaker {
     fn make_span(&mut self, request: &Request<B>) -> Span {
-        let method = request.method().to_string();
+        let method = request.method().as_str();
         let route = request_route(request);
         let target = request_target(request);
         let request_id = request_id(request);
 
+        if self.request_start_hook.is_none() && self.span_enricher.is_none() {
+            return default_request_span(method, route.as_ref(), target, request_id);
+        }
+
         let context = RequestSpanContext {
-            method,
-            route,
-            target,
-            request_id,
+            method: method.to_owned(),
+            route: route.into_owned(),
+            target: target.to_owned(),
+            request_id: request_id.map(str::to_owned),
         };
 
         let span = if let Some(start_hook) = &self.request_start_hook {
             start_hook(&context)
         } else {
-            default_request_span(&context)
+            default_request_span(
+                &context.method,
+                &context.route,
+                &context.target,
+                context.request_id.as_deref(),
+            )
         };
 
         if let Some(enricher) = &self.span_enricher {
@@ -419,19 +429,19 @@ impl<B> OnResponse<B> for HttpOnResponse {
     }
 }
 
-fn default_request_span(context: &RequestSpanContext) -> Span {
-    let otel_name = format!("HTTP {} {}", context.method, context.route);
+fn default_request_span(method: &str, route: &str, target: &str, request_id: Option<&str>) -> Span {
+    let otel_name = format_args!("HTTP {} {}", method, route);
 
     tracing::info_span!(
         "http.request",
         otel.name = %otel_name,
         otel.kind = "server",
         otel.status_code = tracing::field::Empty,
-        http.method = %context.method,
-        http.route = %context.route,
-        http.target = %context.target,
+        http.method = %method,
+        http.route = %route,
+        http.target = %target,
         http.status_code = tracing::field::Empty,
-        request.id = %context.request_id.as_deref().unwrap_or(""),
+        request.id = %request_id.unwrap_or(""),
         app.context = tracing::field::Empty,
     )
 }
@@ -444,27 +454,26 @@ fn default_record_outcome(span: &Span, outcome: &RequestOutcome) {
     );
 }
 
-fn request_route<B>(request: &Request<B>) -> String {
+fn request_route<B>(request: &Request<B>) -> Cow<'_, str> {
     request
         .extensions()
         .get::<MatchedPath>()
-        .map(|path| path.as_str().to_string())
-        .unwrap_or_else(|| FALLBACK_ROUTE.to_string())
+        .map(|path| Cow::Borrowed(path.as_str()))
+        .unwrap_or_else(|| Cow::Borrowed(FALLBACK_ROUTE))
 }
 
-fn request_target<B>(request: &Request<B>) -> String {
+fn request_target<B>(request: &Request<B>) -> &str {
     let uri = request.uri();
     uri.path_and_query()
-        .map(|path| path.as_str().to_string())
-        .unwrap_or_else(|| uri.path().to_string())
+        .map(|path| path.as_str())
+        .unwrap_or_else(|| uri.path())
 }
 
-fn request_id<B>(request: &Request<B>) -> Option<String> {
+fn request_id<B>(request: &Request<B>) -> Option<&str> {
     request
         .extensions()
         .get::<TowerRequestId>()
         .and_then(|id| id.header_value().to_str().ok())
-        .map(str::to_owned)
 }
 
 #[derive(Clone, Copy)]
@@ -486,15 +495,11 @@ struct CopyTraceparentService<S> {
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CopyTraceparentService<S>
 where
     S: Service<Request<ReqBody>, Response = HttpResponse<ResBody>> + Send,
-    S::Future: Send + 'static,
-    S::Error: Send + 'static,
-    ReqBody: Send + 'static,
-    ResBody: Send + 'static,
+    S::Future: Send,
 {
     type Response = HttpResponse<ResBody>;
     type Error = S::Error;
-    type Future =
-        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+    type Future = CopyTraceparentFuture<S::Future>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
@@ -502,14 +507,38 @@ where
 
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
         let traceparent = request.headers().get(TRACEPARENT_HEADER).cloned();
-        let future = self.inner.call(request);
+        let inner = self.inner.call(request);
 
-        Box::pin(async move {
-            let mut response = future.await?;
-            if let Some(value) = traceparent {
-                response.headers_mut().insert(TRACEPARENT_HEADER, value);
+        CopyTraceparentFuture { inner, traceparent }
+    }
+}
+
+pin_project! {
+    struct CopyTraceparentFuture<F> {
+        #[pin]
+        inner: F,
+        traceparent: Option<axum::http::HeaderValue>,
+    }
+}
+
+impl<F, ResBody, E> Future for CopyTraceparentFuture<F>
+where
+    F: Future<Output = Result<HttpResponse<ResBody>, E>>,
+{
+    type Output = Result<HttpResponse<ResBody>, E>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+
+        match this.inner.as_mut().poll(cx) {
+            Poll::Ready(Ok(mut response)) => {
+                if let Some(value) = this.traceparent.take() {
+                    response.headers_mut().insert(TRACEPARENT_HEADER, value);
+                }
+                Poll::Ready(Ok(response))
             }
-            Ok(response)
-        })
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }

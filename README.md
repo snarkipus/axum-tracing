@@ -106,6 +106,20 @@ Use SigNoz when you want traces plus metrics/logs UI in one local environment.
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test`
 
+## Load Testing
+
+Use `./bench_middleware.sh` to run a local middleware-focused throughput check.
+The script starts the demo app, warms up `/health`, then runs two `hey` passes
+against `/`: one without `traceparent` and one with `traceparent`.
+
+Optional environment variables:
+
+- `TOTAL_REQUESTS` (default: `2000`)
+- `CONCURRENCY` (default: `50`)
+- `BASE_URL` (default: `http://127.0.0.1:3000`)
+- `TRACEPARENT_VALUE` (default: W3C example value)
+- `SERVER_LOG` (default: `/tmp/axum-tracing-bench.log`)
+
 README snippets should stay aligned with rustdoc examples validated by `cargo test --doc`.
 
 Single test examples:

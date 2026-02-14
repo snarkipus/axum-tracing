@@ -7,11 +7,12 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
-axum-tracing-opentelemetry = "0.33"
+axum-tracing-opentelemetry = { version = "0.33", features = ["tracing_level_info"] }
 opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto", "reqwest-client"] }
 opentelemetry-semantic-conventions = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+pin-project-lite = "0.2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
