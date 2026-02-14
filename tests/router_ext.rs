@@ -50,3 +50,30 @@ async fn with_telemetry_layer_respects_traceparent_setting() {
 
     assert!(!response.headers().contains_key("traceparent"));
 }
+
+#[tokio::test]
+async fn with_telemetry_layer_uses_custom_request_id_header() {
+    let app = Router::new()
+        .route("/", get(|| async { "ok" }))
+        .with_telemetry_layer(TelemetryLayer::default().with_request_id_header("x-correlation-id"));
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/")
+                .header("x-correlation-id", "external-correlation-id")
+                .body(Body::empty())
+                .expect("request must be valid"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(
+        response
+            .headers()
+            .get("x-correlation-id")
+            .expect("header exists"),
+        "external-correlation-id"
+    );
+    assert!(!response.headers().contains_key("x-request-id"));
+}

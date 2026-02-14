@@ -33,13 +33,16 @@ Advanced customization (snippet):
 
 ```rust
 use axum::{Router, routing::get};
-use axum_tracing::{RouterTelemetryExt, TelemetryLayer};
+use axum_tracing::{HttpTelemetryConfig, RouterTelemetryExt, TelemetryLayer};
 
 let app = Router::new()
     .route("/", get(|| async { "ok" }))
     .with_telemetry_layer(
-        TelemetryLayer::builder()
-            .include_trace_response_header(true)
+        TelemetryLayer::new(HttpTelemetryConfig {
+            include_trace_response_header: true,
+            ..HttpTelemetryConfig::default()
+        })
+            .with_request_id_header("x-correlation-id")
             .with_span_enricher(|ctx, span| {
                 span.record("app.context", format!("{} {}", ctx.method, ctx.target));
             }),
@@ -48,12 +51,14 @@ let app = Router::new()
 
 ## Environment Variables
 
+`TracingConfig::from_env()` applies `environment -> default` precedence.
+
 - `RUST_LOG` (default: `info`)
 - `OTEL_SERVICE_NAME` (default: `axum-telemetry-layer`)
 - `OTEL_SERVICE_VERSION` (default: crate version)
 - `DEPLOYMENT_ENVIRONMENT` (default: `local`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (default: `http://localhost:4317`)
-- `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` (`grpc` or `http/protobuf`)
+- `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` (`grpc` or `http/protobuf`; unknown values fall back to `grpc`)
 
 ## Trace Header Behavior
 
@@ -77,9 +82,12 @@ Use SigNoz when you want traces plus metrics/logs UI in one local environment.
 
 ## Validation
 
+- `cargo test --doc`
 - `cargo fmt --all -- --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test`
+
+README snippets should stay aligned with rustdoc examples validated by `cargo test --doc`.
 
 Single test examples:
 

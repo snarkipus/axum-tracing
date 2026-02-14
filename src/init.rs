@@ -1,3 +1,5 @@
+//! Tracing subscriber and OTLP exporter initialization.
+
 use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
@@ -8,6 +10,10 @@ use crate::{
     errors::TelemetryInitError,
 };
 
+/// Guard that shuts down the tracer provider when dropped.
+///
+/// Hold this for the lifetime of your process so batched spans can flush on
+/// graceful shutdown. Dropping the guard triggers `SdkTracerProvider::shutdown`.
 #[derive(Debug)]
 pub struct TelemetryGuard {
     tracer_provider: Option<SdkTracerProvider>,
@@ -21,6 +27,26 @@ impl Drop for TelemetryGuard {
     }
 }
 
+/// Installs tracing subscriber layers and optional OTLP exporting.
+///
+/// When `config.otlp_endpoint` is `None`, this installs JSON logging only.
+/// When an endpoint is present, this also installs OpenTelemetry tracing export.
+///
+/// This function should be called once during process startup. Calling it after
+/// a global subscriber has already been installed returns
+/// [`TelemetryInitError::Subscriber`].
+///
+/// Returns [`TelemetryInitError`] when exporter construction fails or when a
+/// subscriber is already installed.
+///
+/// # Examples
+///
+/// ```no_run
+/// use axum_tracing::{init_tracing, TracingConfig};
+///
+/// let _guard = init_tracing(TracingConfig::from_env())?;
+/// # Ok::<(), axum_tracing::errors::TelemetryInitError>(())
+/// ```
 pub fn init_tracing(config: TracingConfig) -> Result<TelemetryGuard, TelemetryInitError> {
     let TracingConfig {
         service_name,
@@ -46,18 +72,7 @@ pub fn init_tracing(config: TracingConfig) -> Result<TelemetryGuard, TelemetryIn
         });
     };
 
-    let exporter = match otlp_protocol {
-        OtlpProtocol::Grpc => SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint(endpoint)
-            .build(),
-        OtlpProtocol::HttpBinary => SpanExporter::builder()
-            .with_http()
-            .with_protocol(Protocol::HttpBinary)
-            .with_endpoint(endpoint)
-            .build(),
-    }
-    .map_err(|err| TelemetryInitError::OtlpExporter(err.to_string()))?;
+    let exporter = build_otlp_exporter(endpoint, otlp_protocol)?;
 
     let resource = Resource::builder()
         .with_service_name(service_name.clone())
@@ -85,4 +100,22 @@ pub fn init_tracing(config: TracingConfig) -> Result<TelemetryGuard, TelemetryIn
     Ok(TelemetryGuard {
         tracer_provider: Some(tracer_provider),
     })
+}
+
+fn build_otlp_exporter(
+    endpoint: String,
+    protocol: OtlpProtocol,
+) -> Result<SpanExporter, TelemetryInitError> {
+    match protocol {
+        OtlpProtocol::Grpc => SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint)
+            .build(),
+        OtlpProtocol::HttpBinary => SpanExporter::builder()
+            .with_http()
+            .with_protocol(Protocol::HttpBinary)
+            .with_endpoint(endpoint)
+            .build(),
+    }
+    .map_err(|err| TelemetryInitError::OtlpExporter(err.to_string()))
 }

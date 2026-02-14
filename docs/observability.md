@@ -7,7 +7,7 @@ This crate is trace-first. It focuses on creating high-quality HTTP server spans
 ## Architecture
 
 1. `init_tracing` configures `tracing_subscriber` and an optional OTLP span exporter.
-2. `telemetry_layer` builds an Axum/Tower layer stack for request instrumentation.
+2. `TelemetryLayer::new(config).build()` builds the Axum/Tower layer stack for request instrumentation.
 3. Middleware extracts incoming context, creates request spans, and records response status.
 
 ## Span Conventions
@@ -28,7 +28,7 @@ The request span includes:
 
 - `x-request-id` is generated and propagated.
 
-Note: response `traceparent` propagation is planned as a follow-up enhancement.
+`traceparent` response propagation can be toggled with `HttpTelemetryConfig::include_trace_response_header`.
 
 ## Custom Enrichment Hook
 
