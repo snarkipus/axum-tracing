@@ -30,6 +30,15 @@ The request span includes:
 
 `traceparent` response propagation can be toggled with `HttpTelemetryConfig::include_trace_response_header`.
 
+## Lifecycle Hooks
+
+`TelemetryLayerBuilder` supports lifecycle customization with:
+
+- `with_request_start_hook` to define span creation
+- `with_request_end_hook` to record outcome metadata (`status_code`, `latency`, `is_error`)
+
+If no lifecycle hooks are configured, default HTTP span behavior is used.
+
 ## Custom Enrichment Hook
 
 `TelemetryLayerBuilder::with_span_enricher` accepts a closure:
@@ -41,6 +50,21 @@ The request span includes:
 ```
 
 Use this hook for domain context that helps debug request behavior.
+
+Compatibility behavior:
+
+- `with_span_enricher` remains supported for migration.
+- If hooks and enricher are configured together, hook behavior is primary and
+  the enricher runs additively on the created span.
+
+## Handler Extractors
+
+`axum-tracing` provides ergonomic extractors:
+
+- `RootSpan` for span enrichment in handlers
+- `RequestId` for request id access without manual extension lookup
+
+Missing telemetry context returns explicit extractor rejections.
 
 ## Troubleshooting
 

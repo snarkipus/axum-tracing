@@ -6,12 +6,14 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use axum::{
     body::Body,
+    extract::FromRequestParts,
     extract::MatchedPath,
-    http::{HeaderName, Request, Response},
+    http::{request::Parts, HeaderName, Request, Response as HttpResponse, StatusCode},
     response::IntoResponse,
     routing::Route,
     Router,
@@ -19,8 +21,10 @@ use axum::{
 use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
 use tower::{Service, ServiceBuilder};
 use tower_http::{
-    request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    trace::{MakeSpan, TraceLayer},
+    request_id::{
+        MakeRequestUuid, PropagateRequestIdLayer, RequestId as TowerRequestId, SetRequestIdLayer,
+    },
+    trace::{MakeSpan, OnResponse, TraceLayer},
 };
 use tracing::Span;
 
@@ -33,6 +37,33 @@ const TRACEPARENT_HEADER: &str = "traceparent";
 ///
 /// The callback runs once when the request span is created.
 pub type SpanEnricher = Arc<dyn Fn(&RequestSpanContext, &Span) + Send + Sync + 'static>;
+
+/// Callback used to customize root span creation at request start.
+pub type RequestStartHook = Arc<dyn Fn(&RequestSpanContext) -> Span + Send + Sync + 'static>;
+
+/// Callback used to record request outcome data at request end.
+pub type RequestEndHook = Arc<dyn Fn(&Span, &RequestOutcome) + Send + Sync + 'static>;
+
+/// Axum extractor that exposes the current request root span.
+#[derive(Debug, Clone)]
+pub struct RootSpan(pub Span);
+
+/// Rejection returned when [`RootSpan`] cannot be extracted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootSpanRejection {
+    MissingRootSpan,
+}
+
+/// Axum extractor that exposes the request id generated/propagated by middleware.
+#[derive(Debug, Clone)]
+pub struct RequestId(pub String);
+
+/// Rejection returned when [`RequestId`] cannot be extracted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestIdRejection {
+    MissingRequestId,
+    InvalidRequestId,
+}
 
 /// Request metadata captured when creating an HTTP span.
 ///
@@ -50,6 +81,95 @@ pub struct RequestSpanContext {
     pub request_id: Option<String>,
 }
 
+/// Request outcome metadata available when a response is produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestOutcome {
+    /// HTTP status code returned to the client.
+    pub status_code: u16,
+    /// Time elapsed while processing the request.
+    pub latency: Duration,
+    /// True when status code is treated as an error outcome.
+    pub is_error: bool,
+}
+
+impl RootSpan {
+    /// Returns the inner tracing span.
+    pub fn as_span(&self) -> &Span {
+        &self.0
+    }
+}
+
+impl RequestId {
+    /// Returns the request id as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl IntoResponse for RootSpanRejection {
+    fn into_response(self) -> axum::response::Response {
+        let body = match self {
+            Self::MissingRootSpan => {
+                "missing request telemetry span; ensure TelemetryLayer is mounted"
+            }
+        };
+        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+    }
+}
+
+impl IntoResponse for RequestIdRejection {
+    fn into_response(self) -> axum::response::Response {
+        let body = match self {
+            Self::MissingRequestId => {
+                "missing request id; ensure TelemetryLayer request-id middleware is mounted"
+            }
+            Self::InvalidRequestId => "invalid request id header value",
+        };
+        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+    }
+}
+
+impl<S> FromRequestParts<S> for RootSpan
+where
+    S: Send + Sync,
+{
+    type Rejection = RootSpanRejection;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let span = Span::current();
+        if !span.is_none() {
+            return Ok(Self(span));
+        }
+
+        if parts.extensions.get::<TowerRequestId>().is_some() {
+            return Ok(Self(span));
+        }
+
+        Err(RootSpanRejection::MissingRootSpan)
+    }
+}
+
+impl<S> FromRequestParts<S> for RequestId
+where
+    S: Send + Sync,
+{
+    type Rejection = RequestIdRejection;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let tower_request_id = parts
+            .extensions
+            .get::<TowerRequestId>()
+            .ok_or(RequestIdRejection::MissingRequestId)?;
+
+        let value = tower_request_id
+            .header_value()
+            .to_str()
+            .map_err(|_| RequestIdRejection::InvalidRequestId)?;
+
+        Ok(Self(value.to_owned()))
+    }
+}
+
 /// Builder-style configuration wrapper for the HTTP telemetry middleware stack.
 ///
 /// Use [`TelemetryLayer::default`] for sensible defaults, then chain methods to
@@ -58,6 +178,8 @@ pub struct RequestSpanContext {
 pub struct TelemetryLayer {
     config: HttpTelemetryConfig,
     span_enricher: Option<SpanEnricher>,
+    request_start_hook: Option<RequestStartHook>,
+    request_end_hook: Option<RequestEndHook>,
 }
 
 impl Default for TelemetryLayer {
@@ -77,6 +199,8 @@ impl TelemetryLayer {
         Self {
             config,
             span_enricher: None,
+            request_start_hook: None,
+            request_end_hook: None,
         }
     }
 
@@ -109,6 +233,31 @@ impl TelemetryLayer {
         self
     }
 
+    /// Registers a callback that customizes request-start span creation.
+    ///
+    /// When configured, this callback determines the root span shape. If a
+    /// span enricher is also configured, the enricher runs additively on the
+    /// created span.
+    pub fn with_request_start_hook<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(&RequestSpanContext) -> Span + Send + Sync + 'static,
+    {
+        self.request_start_hook = Some(Arc::new(callback));
+        self
+    }
+
+    /// Registers a callback that records request-end outcome metadata.
+    ///
+    /// The callback is invoked with the root span and response outcome,
+    /// including status code and elapsed latency.
+    pub fn with_request_end_hook<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(&Span, &RequestOutcome) + Send + Sync + 'static,
+    {
+        self.request_end_hook = Some(Arc::new(callback));
+        self
+    }
+
     /// Builds a `tower::Layer` that can be mounted on an Axum router.
     ///
     /// Layer stack behavior:
@@ -132,10 +281,16 @@ impl TelemetryLayer {
         let Self {
             config,
             span_enricher,
+            request_start_hook,
+            request_end_hook,
         } = self;
 
         let request_id_header = HeaderName::from_static(config.request_id_header);
-        let make_span = HttpSpanMaker { span_enricher };
+        let make_span = HttpSpanMaker {
+            span_enricher,
+            request_start_hook,
+        };
+        let on_response = HttpOnResponse { request_end_hook };
 
         ServiceBuilder::new()
             .layer(SetRequestIdLayer::new(
@@ -149,7 +304,11 @@ impl TelemetryLayer {
                     .then_some(CopyTraceparentLayer),
             )
             .layer(OtelAxumLayer::default())
-            .layer(TraceLayer::new_for_http().make_span_with(make_span))
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(make_span)
+                    .on_response(on_response),
+            )
     }
 }
 
@@ -207,6 +366,7 @@ where
 #[derive(Clone)]
 struct HttpSpanMaker {
     span_enricher: Option<SpanEnricher>,
+    request_start_hook: Option<RequestStartHook>,
 }
 
 impl<B> MakeSpan<B> for HttpSpanMaker {
@@ -215,20 +375,6 @@ impl<B> MakeSpan<B> for HttpSpanMaker {
         let route = request_route(request);
         let target = request_target(request);
         let request_id = request_id(request);
-        let otel_name = format!("HTTP {} {}", method, route);
-
-        let span = tracing::info_span!(
-            "http.request",
-            otel.name = %otel_name,
-            otel.kind = "server",
-            otel.status_code = tracing::field::Empty,
-            http.method = %method,
-            http.route = %route,
-            http.target = %target,
-            http.status_code = tracing::field::Empty,
-            request.id = %request_id.as_deref().unwrap_or(""),
-            app.context = tracing::field::Empty,
-        );
 
         let context = RequestSpanContext {
             method,
@@ -237,12 +383,65 @@ impl<B> MakeSpan<B> for HttpSpanMaker {
             request_id,
         };
 
+        let span = if let Some(start_hook) = &self.request_start_hook {
+            start_hook(&context)
+        } else {
+            default_request_span(&context)
+        };
+
         if let Some(enricher) = &self.span_enricher {
             enricher(&context, &span);
         }
 
         span
     }
+}
+
+#[derive(Clone)]
+struct HttpOnResponse {
+    request_end_hook: Option<RequestEndHook>,
+}
+
+impl<B> OnResponse<B> for HttpOnResponse {
+    fn on_response(self, response: &HttpResponse<B>, latency: Duration, span: &Span) {
+        let outcome = RequestOutcome {
+            status_code: response.status().as_u16(),
+            latency,
+            is_error: response.status().is_server_error(),
+        };
+
+        if let Some(end_hook) = &self.request_end_hook {
+            end_hook(span, &outcome);
+            return;
+        }
+
+        default_record_outcome(span, &outcome);
+    }
+}
+
+fn default_request_span(context: &RequestSpanContext) -> Span {
+    let otel_name = format!("HTTP {} {}", context.method, context.route);
+
+    tracing::info_span!(
+        "http.request",
+        otel.name = %otel_name,
+        otel.kind = "server",
+        otel.status_code = tracing::field::Empty,
+        http.method = %context.method,
+        http.route = %context.route,
+        http.target = %context.target,
+        http.status_code = tracing::field::Empty,
+        request.id = %context.request_id.as_deref().unwrap_or(""),
+        app.context = tracing::field::Empty,
+    )
+}
+
+fn default_record_outcome(span: &Span, outcome: &RequestOutcome) {
+    span.record("http.status_code", outcome.status_code);
+    span.record(
+        "otel.status_code",
+        tracing::field::display(if outcome.is_error { "ERROR" } else { "OK" }),
+    );
 }
 
 fn request_route<B>(request: &Request<B>) -> String {
@@ -263,7 +462,7 @@ fn request_target<B>(request: &Request<B>) -> String {
 fn request_id<B>(request: &Request<B>) -> Option<String> {
     request
         .extensions()
-        .get::<RequestId>()
+        .get::<TowerRequestId>()
         .and_then(|id| id.header_value().to_str().ok())
         .map(str::to_owned)
 }
@@ -286,13 +485,13 @@ struct CopyTraceparentService<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CopyTraceparentService<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>> + Send,
+    S: Service<Request<ReqBody>, Response = HttpResponse<ResBody>> + Send,
     S::Future: Send + 'static,
     S::Error: Send + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = Response<ResBody>;
+    type Response = HttpResponse<ResBody>;
     type Error = S::Error;
     type Future =
         Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;

@@ -43,11 +43,30 @@ let app = Router::new()
             ..HttpTelemetryConfig::default()
         })
             .with_request_id_header("x-correlation-id")
+            .with_request_start_hook(|ctx| {
+                tracing::info_span!(
+                    "http.request",
+                    http.method = %ctx.method,
+                    http.route = %ctx.route,
+                    http.target = %ctx.target,
+                )
+            })
+            .with_request_end_hook(|span, outcome| {
+                span.record("http.status_code", outcome.status_code);
+                span.record(
+                    "otel.status_code",
+                    tracing::field::display(if outcome.is_error { "ERROR" } else { "OK" }),
+                );
+            })
             .with_span_enricher(|ctx, span| {
                 span.record("app.context", format!("{} {}", ctx.method, ctx.target));
             }),
     );
 ```
+
+`with_span_enricher` remains supported for backward compatibility. If lifecycle
+hooks and enricher are configured together, lifecycle hooks are primary and the
+enricher runs additively on the start-hook span.
 
 ## Environment Variables
 

@@ -30,4 +30,8 @@ pub use config::{HttpTelemetryConfig, OtlpProtocol, TracingConfig};
 /// Tracing initialization entrypoints and shutdown guard.
 pub use init::{init_tracing, TelemetryGuard};
 /// HTTP telemetry layer types and ergonomic Axum router extension methods.
-pub use layer::{RouterTelemetryExt, TelemetryLayer, TelemetryLayerBuilder};
+pub use layer::{
+    RequestEndHook, RequestId, RequestIdRejection, RequestOutcome, RequestSpanContext,
+    RequestStartHook, RootSpan, RootSpanRejection, RouterTelemetryExt, SpanEnricher,
+    TelemetryLayer, TelemetryLayerBuilder,
+};
